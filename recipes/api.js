@@ -1,6 +1,7 @@
 const path = require("path");
 const express = require("express");
 const router = express.Router();
+const pg = require("pg");
 
 // client side static assets
 router.get("/", (_, res) => res.sendFile(path.join(__dirname, "./index.html")));
@@ -22,36 +23,120 @@ router.get("/detail", (_, res) =>
  */
 
 // connect to postgres
+const pool = new pg.Pool({
+  user: "postgres",
+  host: "localhost",
+  database: "recipeguru",
+  password: "lol",
+  port: 5432,
+});
 
 router.get("/search", async function (req, res) {
-  console.log("search recipes");
+  try {
+    console.log("search recipes");
 
-  // return recipe_id, title, and the first photo as url
-  //
-  // for recipes without photos, return url as default.jpg
+    const { rows } = await pool.query(
+      `SELECT DISTINCT ON (r.recipe_id) 
+        r.recipe_id, r.title, COALESCE(rp.url, 'default.jpg') AS url
+      FROM 
+        recipes r 
+      LEFT JOIN 
+        recipes_photos rp 
+      ON 
+        r.recipe_id = rp.recipe_id 
+      GROUP BY 
+        r.recipe_id, rp.url ORDER BY r.recipe_id ASC
+      `
+    );
 
-  res.status(501).json({ status: "not implemented", rows: [] });
+    if (rows.length === 0) {
+      return res
+        .status(404)
+        .json({ status: "error", message: "No recipes found." });
+    }
+
+    res.status(200).json({ status: "success", rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      status: "error",
+      message: "An error occurred while processing your request.",
+    });
+  }
 });
 
 router.get("/get", async (req, res) => {
-  const recipeId = req.query.id ? +req.query.id : 1;
-  console.log("recipe get", recipeId);
+  try {
+    const recipeId = req.query.id ? parseInt(req.query.id, 10) : 1;
+    if (isNaN(recipeId) || recipeId < 1) {
+      return res
+        .status(400)
+        .json({ status: "error", message: "Invalid recipe ID." });
+    }
+    console.log("recipe get", recipeId);
 
-  // return all ingredient rows as ingredients
-  //    name the ingredient image `ingredient_image`
-  //    name the ingredient type `ingredient_type`
-  //    name the ingredient title `ingredient_title`
-  //
-  //
-  // return all photo rows as photos
-  //    return the title, body, and url (named the same)
-  //
-  //
-  // return the title as title
-  // return the body as body
-  // if no row[0] has no photo, return it as default.jpg
+    const ingredientsPromise = pool.query(
+      `SELECT 
+        i.title AS ingredient_title, i.image AS ingredient_image, i.type AS ingredient_type
+      FROM
+        recipe_ingredients ri
+      INNER JOIN
+        ingredients i
+      ON
+        i.id = ri.ingredient_id
+      WHERE
+        ri.recipe_id = $1;
+      `,
+      [recipeId]
+    );
 
-  res.status(501).json({ status: "not implemented" });
+    const recipesPromise = pool.query(
+      `SELECT
+        r.title, r.body, COALESCE(rp.url, 'default.jpg') AS url
+      FROM
+        recipes r
+      LEFT JOIN 
+        recipes_photos rp
+      ON
+        r.recipe_id = rp.recipe_id
+      WHERE 
+        r.recipe_id = $1;
+      `,
+      [recipeId]
+    );
+
+    const [{ rows: ingredients }, { rows: recipes }] = await Promise.all([
+      ingredientsPromise,
+      recipesPromise,
+    ]);
+
+    if (recipes.length === 0) {
+      return res
+        .status(404)
+        .json({ status: "error", message: "No recipe found with this ID." });
+    }
+
+    if (ingredients.length === 0) {
+      return res.status(404).json({
+        status: "error",
+        message: "No ingredients found for this recipe.",
+      });
+    }
+
+    res.status(200).json({
+      status: "success",
+      ingredients,
+      photos: recipes.map((recipe) => recipe.url),
+      title: recipes[0].title,
+      body: recipes[0].body,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      status: "error",
+      message: "An error occurred while processing your request.",
+    });
+  }
 });
 /**
  * Student code ends here
